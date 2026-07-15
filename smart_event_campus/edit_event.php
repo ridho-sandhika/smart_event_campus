@@ -1,0 +1,289 @@
+<?php
+session_start();
+require_once 'config.php';
+
+// Cek apakah admin sudah login
+if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== true) {
+    header("Location: login.php");
+    exit;
+}
+
+$error = "";
+$event = null;
+
+// Ambil ID kegiatan yang akan diedit
+if (isset($_GET['id']) && is_numeric($_GET['id'])) {
+    $id = $_GET['id'];
+    $stmt = $conn->prepare("SELECT * FROM events WHERE id = ?");
+    $stmt->bind_param("i", $id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows == 1) {
+        $event = $result->fetch_assoc();
+    } else {
+        $_SESSION['error_msg'] = "Kegiatan tidak ditemukan!";
+        header("Location: admin.php");
+        exit;
+    }
+    $stmt->close();
+} else {
+    header("Location: admin.php");
+    exit;
+}
+
+// Proses update data
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+    $id = $_POST['id'];
+    $title = trim($_POST['title']);
+    $description = trim($_POST['description']);
+    $event_date = trim($_POST['event_date']);
+    $event_time = trim($_POST['event_time']);
+    $event_type = trim($_POST['event_type']);
+    $location = trim($_POST['location']);
+    $maps_url = trim($_POST['maps_url']);
+    $is_paid = isset($_POST['is_paid']) ? 1 : 0;
+    $price = !empty($_POST['price']) ? $_POST['price'] : 0;
+    $max_participants = !empty($_POST['max_participants']) ? $_POST['max_participants'] : 0;
+    
+    $poster_update_sql = "";
+    $types = "sssssssidi";
+    $params = [&$title, &$description, &$event_date, &$event_time, &$event_type, &$location, &$maps_url, &$is_paid, &$price, &$max_participants];
+
+    if (isset($_FILES['poster']) && $_FILES['poster']['error'] == 0) {
+        $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+        $filename = $_FILES['poster']['name'];
+        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        
+        if (in_array($ext, $allowed)) {
+            $upload_dir = 'uploads/posters/';
+            if (!is_dir($upload_dir)) {
+                mkdir($upload_dir, 0777, true);
+            }
+            $poster_name = time() . '_' . basename($filename);
+            $target_file = $upload_dir . $poster_name;
+            
+            if (move_uploaded_file($_FILES['poster']['tmp_name'], $target_file)) {
+                $poster_update_sql = ", poster=?";
+                $types .= "s"; 
+                $params[] = &$poster_name;
+            } else {
+                $error = "Gagal mengunggah poster baru.";
+            }
+        } else {
+            $error = "Format file poster tidak valid.";
+        }
+    }
+    $material_update_sql = "";
+    if (isset($_FILES['material']) && $_FILES['material']['error'] == 0) {
+        $allowed_mat = ['pdf', 'ppt', 'pptx', 'doc', 'docx', 'zip', 'rar'];
+        $mat_filename = $_FILES['material']['name'];
+        $mat_ext = strtolower(pathinfo($mat_filename, PATHINFO_EXTENSION));
+        
+        if (in_array($mat_ext, $allowed_mat)) {
+            $mat_upload_dir = 'uploads/materials/';
+            if (!is_dir($mat_upload_dir)) {
+                mkdir($mat_upload_dir, 0777, true);
+            }
+            $material_name = time() . '_' . basename($mat_filename);
+            $mat_target = $mat_upload_dir . $material_name;
+            
+            if (move_uploaded_file($_FILES['material']['tmp_name'], $mat_target)) {
+                $material_update_sql = ", material_file=?";
+                $types .= "s"; 
+                $params[] = &$material_name;
+            } else {
+                $error = "Gagal mengunggah materi baru.";
+            }
+        } else {
+            $error = "Format file materi tidak valid.";
+        }
+    }
+    
+    if (empty($error)) {
+        if (empty($title) || empty($description) || empty($event_date) || empty($event_time) || empty($event_type) || empty($location)) {
+            $error = "Semua field wajib diisi (Maps URL opsional)!";
+        } else {
+            $types .= "i"; // id type
+            $params[] = &$id; // Add ID at the end for WHERE clause
+            
+            $sql = "UPDATE events SET title=?, description=?, event_date=?, event_time=?, event_type=?, location=?, maps_url=?, is_paid=?, price=?, max_participants=? " . $poster_update_sql . $material_update_sql . " WHERE id=?";
+            $stmt = $conn->prepare($sql);
+            
+            // dynamically bind parameters
+            $bind_names[] = $types;
+            for ($i=0; $i<count($params);$i++) {
+                $bind_names[] = &$params[$i];
+            }
+            
+            call_user_func_array(array($stmt, 'bind_param'), $bind_names);
+            
+            if ($stmt->execute()) {
+                $_SESSION['success_msg'] = "Kegiatan berhasil diperbarui!";
+                header("Location: admin.php");
+                exit;
+            } else {
+                $error = "Terjadi kesalahan: " . $conn->error;
+            }
+            $stmt->close();
+        }
+    }
+}
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Kegiatan - Smart Event Campus</title>
+    <link rel="stylesheet" href="style.css?v=<?= time() ?>">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .form-container { max-width: 800px; margin: 0 auto; padding: 2.5rem; }
+        textarea.form-control { resize: vertical; min-height: 120px; }
+        option { background: var(--bg-main); color: var(--text-main); }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <a href="admin.php" class="navbar-brand">
+            <svg class="logo-img" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect width="100" height="100" rx="20" fill="url(#paint0_linear)"/>
+                <path d="M50 25L20 40L50 55L80 40L50 25Z" fill="white"/>
+                <path d="M20 55V70L50 85L80 70V55L50 70L20 55Z" fill="white" fill-opacity="0.8"/>
+                <defs>
+                    <linearGradient id="paint0_linear" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+                        <stop stop-color="#10b981"/>
+                        <stop offset="1" stop-color="#f59e0b"/>
+                    </linearGradient>
+                </defs>
+            </svg>
+            Admin Panel
+        </a>
+    </nav>
+
+    <div class="container">
+        <a href="admin.php" class="back-btn">
+            <i class="fa-solid fa-arrow-left"></i> Kembali ke Dashboard
+        </a>
+        <div class="form-container glass">
+            <h2 style="margin-bottom: 2rem; color: #fff; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem;">
+                <i class="fa-solid fa-pen-to-square" style="color: var(--primary); margin-right: 0.5rem;"></i> Edit Kegiatan
+            </h2>
+            
+            <?php if(!empty($error)): ?>
+                <div class="alert alert-danger">
+                    <i class="fa-solid fa-circle-exclamation"></i> <?php echo htmlspecialchars($error); ?>
+                </div>
+            <?php endif; ?>
+
+            <form action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]) . '?id=' . $event['id']; ?>" method="post" enctype="multipart/form-data">
+                <input type="hidden" name="id" value="<?php echo $event['id']; ?>">
+                
+                <div class="form-grid">
+                    <div class="form-group full-width">
+                        <label for="title">Judul Kegiatan</label>
+                        <input type="text" id="title" name="title" class="form-control" value="<?php echo htmlspecialchars($event['title']); ?>" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="event_type">Jenis Kegiatan</label>
+                        <select id="event_type" name="event_type" class="form-control" required>
+                            <option value="Seminar" <?php echo ($event['event_type'] == 'Seminar') ? 'selected' : ''; ?>>Seminar</option>
+                            <option value="Workshop" <?php echo ($event['event_type'] == 'Workshop') ? 'selected' : ''; ?>>Workshop</option>
+                            <option value="Lomba" <?php echo ($event['event_type'] == 'Lomba') ? 'selected' : ''; ?>>Lomba</option>
+                            <option value="Pelatihan" <?php echo ($event['event_type'] == 'Pelatihan') ? 'selected' : ''; ?>>Pelatihan</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="location">Lokasi (Nama Tempat)</label>
+                        <input type="text" id="location" name="location" class="form-control" value="<?php echo htmlspecialchars($event['location']); ?>" required>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label for="maps_url"><i class="fa-solid fa-map-location-dot" style="color: var(--secondary);"></i> Link Google Maps (Opsional)</label>
+                        <input type="url" id="maps_url" name="maps_url" class="form-control" value="<?php echo htmlspecialchars($event['maps_url'] ?? ''); ?>" placeholder="https://maps.google.com/...">
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label for="poster"><i class="fa-solid fa-image" style="color: var(--primary);"></i> Ganti Poster Event (Opsional)</label>
+                        <?php if(!empty($event['poster'])): ?>
+                            <div style="margin-bottom: 10px;">
+                                <img src="uploads/posters/<?php echo htmlspecialchars($event['poster']); ?>" alt="Poster" style="max-width: 200px; border-radius: 8px;">
+                            </div>
+                        <?php endif; ?>
+                        <input type="file" id="poster" name="poster" class="form-control" accept="image/jpeg, image/png, image/webp, image/gif">
+                        <small style="color: var(--text-muted); display: block; margin-top: 0.5rem;">Biarkan kosong jika tidak ingin mengubah poster.</small>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label for="material"><i class="fa-solid fa-file-pdf" style="color: var(--primary);"></i> Ganti File Materi (Opsional)</label>
+                        <?php if(!empty($event['material_file'])): ?>
+                            <div style="margin-bottom: 10px; font-size: 0.9rem;">
+                                <i class="fa-solid fa-file"></i> File saat ini: <?php echo htmlspecialchars($event['material_file']); ?>
+                            </div>
+                        <?php endif; ?>
+                        <input type="file" id="material" name="material" class="form-control" accept=".pdf,.doc,.docx,.ppt,.pptx,.zip,.rar">
+                        <small style="color: var(--text-muted); display: block; margin-top: 0.5rem;">Biarkan kosong jika tidak ingin mengubah file materi.</small>
+                    </div>
+
+                    <div class="form-group full-width" style="background: rgba(255,255,255,0.05); padding: 1.5rem; border-radius: 0.75rem; border: 1px solid var(--border-color);">
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                            <input type="checkbox" id="is_paid" name="is_paid" value="1" onchange="togglePrice(this)" <?php echo ($event['is_paid'] ?? 0) ? 'checked' : ''; ?>> 
+                            <strong>Kegiatan Berbayar?</strong> (Centang jika ini event berbayar)
+                        </label>
+                        <div id="price_container" style="display: none; margin-top: 1rem; display: flex; gap: 1rem;">
+                            <div style="flex: 1;">
+                                <label for="price">Harga Tiket (Rp)</label>
+                                <input type="number" id="price" name="price" class="form-control" placeholder="50000" value="<?php echo htmlspecialchars($event['price'] ?? ''); ?>">
+                            </div>
+                            <div style="flex: 1;">
+                                <label for="max_participants">Kuota Maksimal Peserta</label>
+                                <input type="number" id="max_participants" name="max_participants" class="form-control" placeholder="100" value="<?php echo htmlspecialchars($event['max_participants'] ?? ''); ?>">
+                            </div>
+                        </div>
+                    </div>
+
+                    <script>
+                        function togglePrice(cb) {
+                            const container = document.getElementById('price_container');
+                            if(cb.checked) {
+                                container.style.display = 'flex';
+                                document.getElementById('price').required = true;
+                                document.getElementById('max_participants').required = true;
+                            } else {
+                                container.style.display = 'none';
+                                document.getElementById('price').required = false;
+                                document.getElementById('max_participants').required = false;
+                            }
+                        }
+                        // Init
+                        togglePrice(document.getElementById('is_paid'));
+                    </script>
+
+                    <div class="form-group">
+                        <label for="event_date">Tanggal</label>
+                        <input type="date" id="event_date" name="event_date" class="form-control" value="<?php echo $event['event_date']; ?>" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="event_time">Waktu</label>
+                        <input type="time" id="event_time" name="event_time" class="form-control" value="<?php echo $event['event_time']; ?>" required>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label for="description">Deskripsi</label>
+                        <textarea id="description" name="description" class="form-control" required><?php echo htmlspecialchars($event['description']); ?></textarea>
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 1rem; margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+                    <button type="submit" class="btn btn-primary"><i class="fa-solid fa-save"></i> Update Kegiatan</button>
+                    <a href="admin.php" class="btn btn-outline"><i class="fa-solid fa-arrow-left"></i> Kembali</a>
+                </div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
